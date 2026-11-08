@@ -182,6 +182,14 @@ def cmd_listar(d):
               f"version={x.get('version')} | {' | '.join(sorted(x.get('classes', [])))}")
 
 
+PAD_NAME = re.compile(r"pad|controller|gamepad|joystick|xbox|8bitdo|dualsense|dualshock", re.I)
+
+
+def is_controller(x, c):
+    gp_btn = [k for k in c["keys"] if k in XBOX_NAMES and k != "KEY_RECORD"]
+    return len(gp_btn) >= 4 or bool(PAD_NAME.search(x.get("name", "")))
+
+
 def cmd_analisar(d):
     print(read(d, "info.txt"))
     dev_ins = parse_dumpsys(read(d, "dumpsys.txt"))
@@ -194,103 +202,111 @@ def cmd_analisar(d):
         print(f"{WARN}[!]{R} Não foi possível ler /sys/bus/usb (bloqueio do SELinux é comum). Use a opção 5.")
     for u in usb:
         if not u["ifs"]:
-            continue  # hubs/root
+            continue
         vend = KNOWN_VENDORS.get(u["vid"], "?")
         print(f"  {u['vid']}:{u['pid']} ({vend}) {u['desc']}")
+        xbox_ifs = [i for i in u["ifs"] if i.get("class") == "ff" and i.get("sub") in ("47", "5d")]
         for i in u["ifs"]:
             kind = iface_kind(i.get("class", ""), i.get("sub", ""), i.get("proto", ""))
             drv = i.get("driver", "NENHUM")
-            flag = OK if drv != "NENHUM" else ERR
-            print(f"     interface {i.get('class')}/{i.get('sub')}/{i.get('proto')}: {kind}  driver={flag}{drv}{R}")
-            if drv == "NENHUM" and i.get("class") == "ff" and i.get("sub") in ("47", "5d"):
-                problemas.append(("SEM_DRIVER", u))
+            nota = ""
+            if drv == "NENHUM" and i in xbox_ifs and any(j.get("driver") != "NENHUM" for j in xbox_ifs):
+                nota = " (normal: interface secundária/áudio do controle Xbox)"
+            flag = OK if drv != "NENHUM" or nota else ERR
+            print(f"     interface {i.get('class')}/{i.get('sub')}/{i.get('proto')}: {kind}  driver={flag}{drv}{R}{nota}")
+        # Só é problema se NENHUMA interface Xbox tiver driver
+        if xbox_ifs and all(i.get("driver") == "NENHUM" for i in xbox_ifs):
+            problemas.append(("SEM_DRIVER", u))
 
     print(f"\n{B}--- 2. Camada de entrada do Android ---{R}")
     usb_in = [x for x in dev_ins if x.get("bus") == "0003"]
-    if not usb_in:
-        print(f"{ERR}[X]{R} Nenhum dispositivo de entrada USB registrado no Android.")
-        problemas.append(("NAO_REGISTRADO", None))
+    outros = []
+    controles = 0
     for x in usb_in:
         cl = x.get("classes", set())
         c = caps.get(x.get("path", ""), {"keys": [], "abs": {}, "rel": []})
+        if not is_controller(x, c):
+            outros.append(x["name"])
+            continue
+        controles += 1
         vend = KNOWN_VENDORS.get(x.get("vendor", ""), "?")
+        kl = x.get("KeyLayoutFile", "")
         print(f"\n  {B}{x['name']}{R}  ({x.get('path')})")
         print(f"     ID: vendor={x.get('vendor')} ({vend}) product={x.get('product')} version={x.get('version')}")
         print(f"     Classes Android: {' | '.join(sorted(cl)) or '?'}")
-        print(f"     KeyLayout: {x.get('KeyLayoutFile', '(nenhum)')}")
+        print(f"     KeyLayout: {kl or '(nenhum)'}")
         gp_btn = [k for k in c["keys"] if k in XBOX_NAMES]
-        ph_keys = [k for k in c["keys"] if k in PHONE_KEYS]
         kb_keys = [k for k in c["keys"] if k.startswith("KEY_") and k not in XBOX_NAMES]
-        mouse_btn = [k for k in c["keys"] if k in ("BTN_LEFT", "BTN_RIGHT", "BTN_MIDDLE")]
         print(f"     Botões de gamepad: {len(gp_btn)}  {' '.join(XBOX_NAMES[k] for k in gp_btn)}")
         print(f"     Eixos: {' '.join(c['abs'].keys()) or 'nenhum'}")
         if kb_keys:
             print(f"     Teclas de teclado: {len(kb_keys)} (ex: {' '.join(kb_keys[:8])})")
-        if c["rel"] or mouse_btn:
-            print(f"     Mouse: {' '.join(c['rel'] + mouse_btn)}")
+        if c["rel"]:
+            print(f"     Mouse: {' '.join(c['rel'])}")
 
         is_gp = "GAMEPAD" in cl or "JOYSTICK" in cl
-        if is_gp and len(gp_btn) >= 8 and ("ABS_X" in c["abs"] or not c["abs"]):
-            print(f"     {OK}=> Reconhecido como CONTROLE DE JOGO de verdade.{R}")
-            problemas.append(("GAMEPAD_OK", x))
-            if x.get("KeyLayoutFile", "").endswith("Generic.kl"):
-                print(f"     {WARN}=> Usa Generic.kl (sem mapeamento específico). Normalmente funciona;"
-                      f" se botões estiverem trocados veja a opção 6 (root).{R}")
-                problemas.append(("GENERIC_KL", x))
-            if "ABS_Z" in c["abs"] and "ABS_RX" not in c["abs"]:
-                print(f"     {WARN}=> Layout DInput (anal. dir em Z/RZ). Alguns jogos/Wine leem errado.{R}")
-                problemas.append(("DINPUT_LAYOUT", x))
-        elif ph_keys and not gp_btn:
-            print(f"     {ERR}=> Está enviando TECLAS DE TECLADO/MÍDIA (setas, Enter, Voltar...),"
-                  f" não botões de controle!{R}")
-            problemas.append(("MODO_TECLADO", x))
-        elif c["rel"] or "CURSOR" in cl:
-            print(f"     {ERR}=> Está se apresentando como MOUSE.{R}")
-            problemas.append(("MODO_MOUSE", x))
-        elif kb_keys and not is_gp:
-            print(f"     {WARN}=> Dispositivo só de teclas (sem eixos de joystick).{R}")
-            problemas.append(("MODO_TECLADO", x))
+        if not is_gp or len(gp_btn) < 4:
+            if c["rel"]:
+                print(f"     {ERR}=> O CONTROLE está se apresentando como MOUSE.{R}")
+                problemas.append(("MODO_MOUSE", x))
+            else:
+                print(f"     {ERR}=> O CONTROLE está enviando TECLAS DE TECLADO, não botões de gamepad.{R}")
+                problemas.append(("MODO_TECLADO", x))
+            continue
+
+        print(f"     {OK}=> Reconhecido como CONTROLE DE JOGO (botões OK).{R}")
+        problemas.append(("GAMEPAD_OK", x))
+        ab = c["abs"]
+        trig_z = "ABS_Z" in ab and ab["ABS_Z"][0] >= 0 and "ABS_RZ" in ab and ab["ABS_RZ"][0] >= 0
+        if kl.endswith("Generic.kl") and trig_z and "ABS_RX" in ab:
+            print(f"""     {ERR}=> EIXOS TROCADOS: o kernel manda os GATILHOS em ABS_Z/ABS_RZ e o analógico
+        direito em ABS_RX/ABS_RY, mas o Generic.kl repassa isso como AXIS_Z/AXIS_RZ e
+        AXIS_RX/AXIS_RY. A maioria dos jogos/apps Android lê o ANALÓGICO DIREITO em Z/RZ
+        e os gatilhos em LTRIGGER/RTRIGGER. Resultado: LT/RT viram o analógico direito
+        (e, soltos, ficam em -1 = analógico "puxado" para um canto), o analógico direito
+        real é ignorado e os gatilhos não funcionam.{R}""")
+            problemas.append(("EIXOS_TROCADOS", x))
+        elif kl.endswith("Generic.kl"):
+            print(f"     {WARN}=> Usa Generic.kl (sem mapeamento específico para este ID).{R}")
+
+    if outros:
+        print(f"\n  Outros dispositivos USB (não são o controle, ignorados): {', '.join(sorted(set(outros)))}")
+    if controles == 0:
+        print(f"{ERR}[X]{R} Nenhum controle de jogo registrado no Android.")
+        problemas.append(("NAO_REGISTRADO", None))
 
     print(f"\n{B}--- 3. Diagnóstico e correções ---{R}")
     tipos = {p[0] for p in problemas}
+    if "EIXOS_TROCADOS" in tipos:
+        x = next(p[1] for p in problemas if p[0] == "EIXOS_TROCADOS")
+        f = f"Vendor_{x.get('vendor')}_Product_{x.get('product')}_Version_{x.get('version')}.kl"
+        print(f"""{ERR}* CAUSA PRINCIPAL: o Android não tem mapeamento (keylayout) para este controle
+  ({x.get('vendor')}:{x.get('product')}) e usa o Generic.kl, que deixa analógico direito e gatilhos
+  nos eixos errados.{R} Os botões funcionam; por isso ele "controla o celular" mas não o jogo.
+  Correções:
+   a) COM ROOT: opção 6 do menu -> instala /data/system/devices/keylayout/{f}
+      com o mapeamento Xbox (RX/RY -> Z/RZ, Z/RZ -> LTRIGGER/RTRIGGER). Reconecte o controle.
+   b) SEM ROOT: remapear dentro do app. No Winlator, em Input Controls, crie um perfil com o
+      controle externo e associe os eixos manualmente (LT/RT aparecem como eixos Z/RZ).
+      Em jogos Android, use a tela de configuração de controle do jogo, se existir.
+   c) SEM ROOT: apps remapeadores de gamepad (via Shizuku/acessibilidade) podem corrigir.
+   d) Atualizações futuras do One UI podem trazer o keylayout deste controle.""")
     if "SEM_DRIVER" in tipos:
-        print(f"""{ERR}* O controle está no modo Xbox (GIP/XInput) mas o KERNEL do celular não carregou
-  driver para este vendor/product.{R} Isso não se corrige sem root/kernel customizado.
-  O que tentar:
-   - Atualizar o firmware do controle (8BitDo Ultimate Software / Firmware Updater no PC).
-   - Se o modelo tiver Bluetooth/2.4G, usar esse modo (o dongle/BT aparece como HID).
-   - Se o modelo tiver chave/combinação de modo, trocar para modo D-input/Android.
-   - Atualizar o One UI (kernels novos trazem mais IDs no xpad).""")
+        print(f"""{ERR}* O controle está no modo Xbox (GIP/XInput) mas o kernel não carregou driver para ele.{R}
+  Sem root/kernel customizado não há correção no celular. Tente: atualizar o firmware do
+  controle, usar Bluetooth/2.4G se o modelo tiver, ou atualizar o One UI.""")
     if "MODO_TECLADO" in tipos or "MODO_MOUSE" in tipos:
-        print(f"""{ERR}* O controle está num modo/perfil de TECLADO ou MOUSE.{R} Por isso ele "controla o celular".
-  Correções (a combinação exata depende do modelo - confira o manual do seu 8BitDo):
-   - Aperte o botão de PERFIL (Profile/Star, quando existe) até o LED de perfil apagar
-     -> volta ao perfil padrão sem remapeamentos.
-   - Se houver chave de modo atrás (X / D / S), use X (Xbox/XInput) ou D (DInput/Android).
-   - Em vários 8BitDo: desligado, segure START + X (XInput) ou START + B (Android/DInput),
-     ou segure X / B enquanto pluga o cabo.
-   - No PC, abra o 8BitDo Ultimate Software e verifique se algum botão foi mapeado para
-     tecla de teclado/mouse; restaure o padrão e atualize o firmware.
-   - Rode o diagnóstico de novo: o objetivo é ver "Classes: ... GAMEPAD | JOYSTICK".""")
+        print(f"""{ERR}* O controle está num modo/perfil de TECLADO ou MOUSE.{R}
+   - Aperte o botão de perfil (quando existe) até o LED de perfil apagar.
+   - Use a chave/combinação de modo do seu modelo (veja o manual 8BitDo).
+   - No PC, restaure o padrão no 8BitDo Ultimate Software e atualize o firmware.""")
     if "NAO_REGISTRADO" in tipos and "SEM_DRIVER" not in tipos:
-        print(f"""{WARN}* Nenhum dispositivo de entrada USB.{R} Verifique cabo (precisa ser de DADOS, não só carga),
-  adaptador OTG/USB-C, e se o controle está ligado. Teste a opção 5 para ver se o USB é detectado.""")
-    if "GAMEPAD_OK" in tipos and not tipos & {"MODO_TECLADO", "MODO_MOUSE", "SEM_DRIVER"}:
-        print(f"""{OK}* O Android reconhece como controle de jogo.{R} Observações importantes:
-   - É NORMAL o controle navegar pelo celular: no Android o D-pad move o foco, A confirma,
-     B volta e o botão Xbox/Home vai para a tela inicial. Isso NÃO significa que está errado.
-   - O jogo precisa suportar controle. Jogos Android nativos: procure "Controle/Gamepad"
-     nas opções do jogo.
-   - No Winlator (jogos Windows): durante o jogo abra o menu lateral > Input Controls,
-     selecione um perfil e verifique as opções de controle externo (XInput/DInput);
-     em alguns jogos é preciso alternar entre XInput e DInput. Nas configurações do
-     container, confirme que os componentes de entrada (xinput/dinput) estão habilitados.
-   - Samsung Game Booster: desative "Bloquear durante o jogo > Botões de navegação"
-     e similares se o botão Home/Back atrapalhar.
-   - Use a opção 4 (teste ao vivo) para confirmar que cada botão chega com o nome certo.""")
-    if "DINPUT_LAYOUT" in tipos:
-        print(f"""{WARN}* Layout DInput detectado.{R} Se o analógico direito/gatilhos estiverem trocados,
-  prefira o modo X-input do controle ou ajuste o mapeamento no Input Controls do Winlator.""")
+        print(f"""{WARN}* Nenhum controle registrado.{R} Verifique o cabo (de DADOS), o hub/adaptador OTG e se o
+  controle está ligado. Teste a opção 5.""")
+    if "GAMEPAD_OK" in tipos:
+        print(f"""{OK}* Lembrete:{R} é NORMAL um controle navegar pelo celular (D-pad move o foco, A confirma,
+  B volta, Xbox = Home). No Winlator, abra o menu lateral > Input Controls durante o jogo e
+  confira o perfil/opções XInput-DInput. Use a opção 4 para testar cada botão e eixo.""")
 
 
 # ---------------------------------------------------------------- ao vivo
@@ -405,6 +421,13 @@ def main():
         cmd_analisar(a[1])
     elif cmd == "listar":
         cmd_listar(a[1])
+    elif cmd == "detectar":
+        caps = parse_getevent(read(a[1], "getevent.txt"))
+        for x in usb_input_devices(a[1]):
+            c = caps.get(x["path"], {"keys": [], "abs": {}, "rel": []})
+            if is_controller(x, c) and "GAMEPAD" in x.get("classes", set()):
+                print(x.get("vendor"), x.get("product"), x.get("version"))
+                break
     elif cmd == "vivo":
         try:
             cmd_vivo(a[1], a[2])

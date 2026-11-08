@@ -138,9 +138,10 @@ instalar_kl_root() {
   command -v su >/dev/null || { err "Sem root (su). Esta correção exige root."; return; }
   adb_ok || return
   coletar
-  python "$HELPER" listar "$TMPD"
-  read -rp "vendor (hex, ex: 2dc8): " v; read -rp "product (hex, ex: 2002): " p; read -rp "version (hex, ex: 0110): " ver
+  read -r v p ver < <(python "$HELPER" detectar "$TMPD")
   rm -rf "$TMPD"
+  [ -z "${v:-}" ] && { err "Nenhum controle detectado. Ligue o controle e tente de novo."; return; }
+  echo "Controle detectado: vendor=$v product=$p version=$ver"
   f="Vendor_${v}_Product_${p}_Version_${ver}.kl"
   python "$HELPER" kl > "$HOME/$f"
   su -c "mkdir -p /data/system/devices/keylayout && cp '$HOME/$f' /data/system/devices/keylayout/ && chmod 644 /data/system/devices/keylayout/$f && restorecon -R /data/system/devices" \

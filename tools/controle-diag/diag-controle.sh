@@ -174,7 +174,9 @@ corrigir_sem_root() {
   if ! command -v clang >/dev/null && ! command -v cc >/dev/null; then
     echo "Instalando compilador (clang)..."; pkg install -y clang || { err "Falha ao instalar clang."; return; }
   fi
-  cc -O2 -o "$HOME/padfix" "$DIR/padfix.c" || { err "Falha ao compilar padfix.c"; return; }
+  if [ ! -x "$HOME/padfix" ] || [ "$DIR/padfix.c" -nt "$HOME/padfix" ]; then
+    cc -O2 -o "$HOME/padfix" "$DIR/padfix.c" || { err "Falha ao compilar padfix.c"; return; }
+  fi
   adb shell "pkill -f $PADFIX_REMOTE" >/dev/null 2>&1
   adb push "$HOME/padfix" "$PADFIX_REMOTE" >/dev/null || { err "Falha ao enviar o binário."; return; }
   adb shell "chmod 755 $PADFIX_REMOTE; nohup $PADFIX_REMOTE $v $p ${clone%:*} ${clone#*:} >$PADFIX_REMOTE.log 2>&1 &"
@@ -199,6 +201,76 @@ parar_padfix() {
 }
 
 # ---------------------------------------------------------------------
+# Modo automático (usado pelo atalho da tela inicial): ./diag-controle.sh --ligar
+avisar() {
+  echo "$*"
+  command -v termux-toast >/dev/null && termux-toast -g middle "$*" >/dev/null 2>&1
+}
+
+auto_conectar() {
+  [ "$(adb get-state 2>/dev/null)" = "device" ] && return 0
+  adb connect 127.0.0.1:5555 >/dev/null 2>&1
+  [ "$(adb get-state 2>/dev/null)" = "device" ] && return 0
+  # A porta da Depuração sem fio muda a cada ativação: procura portas abertas
+  for port in $(python - <<'PY'
+import socket
+for p in range(30000, 50000):
+    s = socket.socket(); s.settimeout(0.05)
+    if s.connect_ex(("127.0.0.1", p)) == 0: print(p)
+    s.close()
+PY
+  ); do
+    adb connect "127.0.0.1:$port" >/dev/null 2>&1
+    sleep 1
+    [ "$(adb get-state 2>/dev/null)" = "device" ] && return 0
+    adb disconnect "127.0.0.1:$port" >/dev/null 2>&1
+  done
+  return 1
+}
+
+modo_ligar() {
+  if ! auto_conectar; then
+    avisar "Controle: ative a 'Depuração sem fio' (Wi-Fi ligado) e toque de novo."
+    exit 1
+  fi
+  if sh_adb "cat $PADFIX_REMOTE.log" | tail -1 | grep -q "ATIVO\|aguardando" && sh_adb "pgrep -f $PADFIX_REMOTE" | grep -q .; then
+    avisar "Controle: remapeador já está ligado."
+    exit 0
+  fi
+  if corrigir_sem_root | tee "$HOME/.padfix-ultimo.log" | grep -q "Remapeador ativo"; then
+    avisar "Controle Xbox: remapeador LIGADO."
+  else
+    avisar "Controle: falhou. Veja ~/.padfix-ultimo.log (controle está conectado?)"
+    exit 1
+  fi
+}
+
+instalar_atalho() {
+  hdr "Atalho na tela inicial (Termux:Widget)"
+  mkdir -p "$HOME/.shortcuts/tasks"
+  for n in "Controle Xbox ON:--ligar" "Controle Xbox OFF:--desligar"; do
+    f="$HOME/.shortcuts/tasks/${n%%:*}.sh"
+    printf '#!/data/data/com.termux/files/usr/bin/bash\nexec "%s/diag-controle.sh" %s\n' "$DIR" "${n##*:}" > "$f"
+    chmod 700 "$f"
+  done
+  ok "Atalhos criados em ~/.shortcuts/tasks/"
+  cat <<TXT
+Agora:
+ 1. Instale o app "Termux:Widget" (mesma fonte do seu Termux: F-Droid ou GitHub).
+ 2. Na tela inicial: segure num espaço vazio > Widgets > Termux:Widget > arraste.
+ 3. Toque em "Controle Xbox ON" - roda em segundo plano, sem abrir o Termux.
+    (Com o app Termux:API instalado aparece um aviso na tela com o resultado.)
+ 4. Opcional: Opções do desenvolvedor > "Blocos de configurações rápidas do
+    desenvolvedor" > ative "Depuração sem fio" para ligá-la pelo painel rápido.
+TXT
+}
+
+case "${1:-}" in
+  --ligar) modo_ligar; exit 0 ;;
+  --desligar) auto_conectar && adb shell "pkill -f $PADFIX_REMOTE"; avisar "Controle: remapeador desligado."; exit 0 ;;
+esac
+
+# ---------------------------------------------------------------------
 while true; do
   hdr "Diagnóstico de controle (8BitDo / Xbox) - S23"
   cat <<M
@@ -210,13 +282,14 @@ while true; do
  6) [ROOT] Instalar mapeamento (keylayout) Xbox padrão
  7) CORRIGIR SEM ROOT: ligar remapeador (eixos/gatilhos de Xbox)
  8) Desligar remapeador
+ 9) Criar atalho na tela inicial (ligar com 1 toque, sem abrir o Termux)
  0) Sair
 M
   read -rp "> " op
   case "$op" in
     1) instalar_deps ;; 2) conectar_adb ;; 3) diagnostico ;;
     4) teste_ao_vivo ;; 5) usb_sem_adb ;; 6) instalar_kl_root ;;
-    7) corrigir_sem_root ;; 8) parar_padfix ;;
+    7) corrigir_sem_root ;; 8) parar_padfix ;; 9) instalar_atalho ;;
     0) exit 0 ;; *) warn "Opção inválida" ;;
   esac
   pause

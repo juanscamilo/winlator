@@ -33,6 +33,9 @@ No menu:
    para o Android aplicar o keylayout certo (analógico direito em Z/RZ, gatilhos em
    LTRIGGER/RTRIGGER). Precisa ser religado após reiniciar o celular. Sem vibração.
 8. **Desligar remapeador.**
+9. **Atalho na tela inicial** — cria tarefas do Termux:Widget ("Controle Xbox ON/OFF") que
+   rodam `./diag-controle.sh --ligar` em segundo plano: reconecta o ADB sozinho (procura a
+   porta da Depuração sem fio) e liga o remapeador.
 
 ## Como interpretar
 

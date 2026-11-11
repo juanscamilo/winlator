@@ -177,7 +177,7 @@ corrigir_sem_root() {
   if [ ! -x "$HOME/padfix" ] || [ "$DIR/padfix.c" -nt "$HOME/padfix" ]; then
     cc -O2 -o "$HOME/padfix" "$DIR/padfix.c" || { err "Falha ao compilar padfix.c"; return; }
   fi
-  adb shell "pkill -f $PADFIX_REMOTE" >/dev/null 2>&1
+  adb shell "pkill -x padfix" >/dev/null 2>&1
   adb push "$HOME/padfix" "$PADFIX_REMOTE" >/dev/null || { err "Falha ao enviar o binário."; return; }
   adb shell "chmod 755 $PADFIX_REMOTE; nohup $PADFIX_REMOTE $v $p ${clone%:*} ${clone#*:} >$PADFIX_REMOTE.log 2>&1 &"
   sleep 2
@@ -197,7 +197,7 @@ corrigir_sem_root() {
 
 parar_padfix() {
   adb_ok || return
-  adb shell "pkill -f $PADFIX_REMOTE" && ok "Remapeador parado; o controle voltou ao estado original." || warn "Não estava rodando."
+  adb shell "pkill -x padfix" && ok "Remapeador parado; o controle voltou ao estado original." || warn "Não estava rodando."
 }
 
 # ---------------------------------------------------------------------
@@ -233,7 +233,7 @@ modo_ligar() {
     avisar "Controle: ative a 'Depuração sem fio' (Wi-Fi ligado) e toque de novo."
     exit 1
   fi
-  if sh_adb "cat $PADFIX_REMOTE.log" | tail -1 | grep -q "ATIVO\|aguardando" && sh_adb "pgrep -f $PADFIX_REMOTE" | grep -q .; then
+  if sh_adb "cat $PADFIX_REMOTE.log" | tail -1 | grep -q "ATIVO\|aguardando" && sh_adb "pgrep -x padfix" | grep -q .; then
     avisar "Controle: remapeador já está ligado."
     exit 0
   fi
@@ -267,7 +267,7 @@ TXT
 
 case "${1:-}" in
   --ligar) modo_ligar; exit 0 ;;
-  --desligar) auto_conectar && adb shell "pkill -f $PADFIX_REMOTE"; avisar "Controle: remapeador desligado."; exit 0 ;;
+  --desligar) auto_conectar && adb shell "pkill -x padfix"; avisar "Controle: remapeador desligado."; exit 0 ;;
 esac
 
 # ---------------------------------------------------------------------

@@ -28,6 +28,12 @@ No menu:
    HID) sem precisar de ADB (requer o app Termux:API).
 6. **[root]** instala um keylayout Xbox padrão em `/data/system/devices/keylayout/`.
 
+7. **Corrigir sem root** — compila e inicia o `padfix` (como usuário `shell`, via ADB):
+   captura o controle e cria um clone via `/dev/uinput` com ID de controle Xbox oficial,
+   para o Android aplicar o keylayout certo (analógico direito em Z/RZ, gatilhos em
+   LTRIGGER/RTRIGGER). Precisa ser religado após reiniciar o celular. Sem vibração.
+8. **Desligar remapeador.**
+
 ## Como interpretar
 
 | Resultado | Significado | O que fazer |
@@ -35,4 +41,5 @@ No menu:
 | `GAMEPAD \| JOYSTICK` + botões A/B/X/Y | Android reconhece como controle | Normal o D-pad navegar no celular. Configure o jogo / Winlator (Input Controls, XInput/DInput) |
 | Só `KEYBOARD`/`DPAD` e teclas `KEY_*` | Controle em modo/perfil teclado | Botão de perfil, chave de modo, combinação de modo, restaurar no 8BitDo Ultimate Software |
 | `CURSOR` / `REL_X` | Modo mouse | Igual acima |
+| Gamepad OK mas **EIXOS TROCADOS** (Generic.kl) | Gatilhos viram a câmera, analógico direito não funciona | Opção 7 (sem root) ou 6 (root) |
 | Interface `ff/47/d0` com `driver=NENHUM` | Kernel sem driver xpad para esse ID | Firmware do controle, modo BT/2.4G, atualização do One UI ou kernel com root |

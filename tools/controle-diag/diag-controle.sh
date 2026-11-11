@@ -149,6 +149,56 @@ instalar_kl_root() {
 }
 
 # ---------------------------------------------------------------------
+PADFIX_REMOTE=/data/local/tmp/padfix
+
+corrigir_sem_root() {
+  hdr "Corrigir SEM ROOT (remapeador padfix)"
+  adb_ok || return
+  coletar
+  read -r v p ver < <(python "$HELPER" detectar "$TMPD")
+  rm -rf "$TMPD"
+  [ -z "${v:-}" ] && { err "Nenhum controle detectado. Ligue o controle e tente de novo."; return; }
+  echo "Controle detectado: $v:$p"
+
+  # Escolhe uma identidade Xbox para a qual ESTE celular tem keylayout correto
+  clone=""
+  for cand in 045e:02ea 045e:02dd 045e:02d1 045e:0b12 045e:028e; do
+    f="Vendor_${cand%:*}_Product_${cand#*:}.kl"
+    if sh_adb "cat /system/usr/keylayout/$f /vendor/usr/keylayout/$f /product/usr/keylayout/$f /odm/usr/keylayout/$f 2>/dev/null" | grep -q "LTRIGGER"; then
+      clone="$cand"; break
+    fi
+  done
+  [ -z "$clone" ] && { err "Nenhum keylayout de Xbox encontrado no sistema; não dá para usar este método."; return; }
+  ok "Identidade do clone: $clone (keylayout Xbox presente no sistema)"
+
+  if ! command -v clang >/dev/null && ! command -v cc >/dev/null; then
+    echo "Instalando compilador (clang)..."; pkg install -y clang || { err "Falha ao instalar clang."; return; }
+  fi
+  cc -O2 -o "$HOME/padfix" "$DIR/padfix.c" || { err "Falha ao compilar padfix.c"; return; }
+  adb shell "pkill -f $PADFIX_REMOTE" >/dev/null 2>&1
+  adb push "$HOME/padfix" "$PADFIX_REMOTE" >/dev/null || { err "Falha ao enviar o binário."; return; }
+  adb shell "chmod 755 $PADFIX_REMOTE; nohup $PADFIX_REMOTE $v $p ${clone%:*} ${clone#*:} >$PADFIX_REMOTE.log 2>&1 &"
+  sleep 2
+  log="$(sh_adb cat $PADFIX_REMOTE.log)"
+  echo "$log"
+  if echo "$log" | grep -q "ATIVO"; then
+    kl="$(sh_adb dumpsys input | grep -A14 'Xbox Controller (padfix)' | grep -m1 KeyLayoutFile)"
+    ok "Remapeador ativo. $kl"
+    echo "Teste agora num jogo: analógico direito e gatilhos devem estar corretos."
+    echo "Ele continua rodando em segundo plano (pode fechar o Termux). Se desconectar o"
+    echo "controle ele espera voltar. Depois de REINICIAR o celular, rode esta opção de novo."
+    echo "Limitação: sem vibração (rumble)."
+  else
+    err "O remapeador não iniciou. Envie a mensagem acima para análise."
+  fi
+}
+
+parar_padfix() {
+  adb_ok || return
+  adb shell "pkill -f $PADFIX_REMOTE" && ok "Remapeador parado; o controle voltou ao estado original." || warn "Não estava rodando."
+}
+
+# ---------------------------------------------------------------------
 while true; do
   hdr "Diagnóstico de controle (8BitDo / Xbox) - S23"
   cat <<M
@@ -158,12 +208,15 @@ while true; do
  4) Teste ao vivo dos botões (mostra o que o Android recebe)
  5) Ler descritor USB direto (termux-usb, sem ADB)
  6) [ROOT] Instalar mapeamento (keylayout) Xbox padrão
+ 7) CORRIGIR SEM ROOT: ligar remapeador (eixos/gatilhos de Xbox)
+ 8) Desligar remapeador
  0) Sair
 M
   read -rp "> " op
   case "$op" in
     1) instalar_deps ;; 2) conectar_adb ;; 3) diagnostico ;;
     4) teste_ao_vivo ;; 5) usb_sem_adb ;; 6) instalar_kl_root ;;
+    7) corrigir_sem_root ;; 8) parar_padfix ;;
     0) exit 0 ;; *) warn "Opção inválida" ;;
   esac
   pause
